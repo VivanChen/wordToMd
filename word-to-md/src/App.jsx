@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import * as mammoth from "mammoth";
 
 /* ═══════════════════════════════════════════════════════════
@@ -390,10 +390,17 @@ function renderMd(md) {
   h = h.replace(/```\n?([\s\S]*?)```/g, '<pre class="cb"><code>$1</code></pre>');
   h = h.replace(/`([^`]+)`/g, '<code class="ci">$1</code>');
 
-  // Headings
+  // Headings — add id for anchor navigation
   for (let i = 6; i >= 1; i--) {
     const re = new RegExp(`^#{${i}}\\s+(.+)$`, "gm");
-    h = h.replace(re, `<h${i} class="mh mh${i}">$1</h${i}>`);
+    h = h.replace(re, (_, text) => {
+      const id = text.trim().toLowerCase()
+        .replace(/\*+/g, "")
+        .replace(/[()（）]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/[^\w\u4e00-\u9fff-]/g, "");
+      return `<h${i} class="mh mh${i}" id="${id}">${text}</h${i}>`;
+    });
   }
 
   h = h.replace(/^---$/gm, '<hr class="mhr"/>');
@@ -417,7 +424,6 @@ function renderMd(md) {
   });
   h = h.replace(/((<tr>.*<\/tr>\n?)+)/g, m => {
     let t = m.replace(/<!--sep-->\n?/g, "");
-    // Bold first row
     const fr = t.match(/<tr>(.*?)<\/tr>/);
     if (fr) t = t.replace(fr[0], fr[0].replace(/<td class="mtd">/g, '<td class="mth">'));
     return `<table class="mt">${t}</table>`;
@@ -425,14 +431,39 @@ function renderMd(md) {
 
   h = h.replace(/^&gt;\s?(.+)$/gm, '<blockquote class="mbq">$1</blockquote>');
 
-  // Paragraphs
-  h = h.split("\n").map(l => {
+  // Paragraphs — handle consecutive <strong> lines as metadata block with <br>
+  h = h.split("\n").map((l, i, arr) => {
     const t = l.trim();
     if (!t || /^<(h[1-6]|ul|ol|li|pre|table|tr|td|hr|blockquote|div|p|img)/.test(t) || /^<!--/.test(t)) return t;
+    // Check if this is a bold metadata line followed by another bold line
+    const isBoldLine = /^<strong>[^<]+<\/strong>/.test(t);
+    const nextIsBold = arr[i + 1] && /^<strong>[^<]+<\/strong>/.test(arr[i + 1]?.trim());
+    if (isBoldLine && nextIsBold) return `<p class="mp mb0">${t}</p>`;
     return `<p class="mp">${t}</p>`;
   }).join("\n");
 
   return h;
+}
+
+/* Extract TOC entries from markdown */
+function extractToc(md) {
+  if (!md) return [];
+  const entries = [];
+  const lines = md.split("\n");
+  for (const line of lines) {
+    const m = line.match(/^(#{1,6})\s+(.+)$/);
+    if (m) {
+      const level = m[1].length;
+      const text = m[2].trim();
+      const id = text.toLowerCase()
+        .replace(/\*+/g, "")
+        .replace(/[()（）]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/[^\w\u4e00-\u9fff-]/g, "");
+      entries.push({ level, text, id });
+    }
+  }
+  return entries;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -541,7 +572,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main style={{ maxWidth: 1140, margin: "0 auto", padding: "24px 20px" }}>
+      <main style={{ maxWidth: 1320, margin: "0 auto", padding: "24px 20px" }}>
         {page === "convert" && (<div>
           {/* Upload */}
           <div onDrop={e => { e.preventDefault(); setDrag(false); handleFiles(e.dataTransfer.files); }} onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onClick={() => ref.current?.click()} style={{ border: `2px dashed ${drag ? A : AB}`, borderRadius: 14, padding: "34px 20px", textAlign: "center", cursor: "pointer", background: drag ? AL : "var(--color-background-primary)", transition: "all 0.2s", marginBottom: 14 }}>
@@ -595,10 +626,10 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, overflow: "hidden" }}>
-                {view === "preview" && <div className="md-body" style={{ padding: "28px 36px", maxHeight: 650, overflowY: "auto" }} dangerouslySetInnerHTML={{ __html: renderMd(cur.md) }} />}
-                {view === "source" && <textarea value={cur.md} onChange={e => setMd(e.target.value)} style={{ width: "100%", minHeight: 550, padding: "22px 28px", border: "none", resize: "vertical", fontFamily: '"JetBrains Mono", monospace', fontSize: 13, lineHeight: 1.7, background: "transparent", color: "var(--color-text-primary)", outline: "none" }}/>}
-                {view === "html" && <pre style={{ padding: "22px 28px", fontSize: 12, lineHeight: 1.6, overflowX: "auto", maxHeight: 550, fontFamily: '"JetBrains Mono", monospace', color: "var(--color-text-secondary)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{cur.html}</pre>}
+              <div style={{ position: "relative" }}>
+                {view === "preview" && <MdViewer md={cur.md} maxH={650} />}
+                {view === "source" && <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, overflow: "hidden" }}><textarea value={cur.md} onChange={e => setMd(e.target.value)} style={{ width: "100%", minHeight: 550, padding: "22px 28px", border: "none", resize: "vertical", fontFamily: '"JetBrains Mono", monospace', fontSize: 13, lineHeight: 1.7, background: "transparent", color: "var(--color-text-primary)", outline: "none" }}/></div>}
+                {view === "html" && <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, overflow: "hidden" }}><pre style={{ padding: "22px 28px", fontSize: 12, lineHeight: 1.6, overflowX: "auto", maxHeight: 550, fontFamily: '"JetBrains Mono", monospace', color: "var(--color-text-secondary)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{cur.html}</pre></div>}
               </div>
 
               <div style={{ display: "flex", gap: 14, marginTop: 10, fontSize: 12, color: "var(--color-text-tertiary)", flexWrap: "wrap" }}>
@@ -632,7 +663,7 @@ export default function App() {
                 <Btn i={I.x} l="關閉" o={() => { setRdFile(null); setRdContent(""); }} outline sm />
               </div>
             </div>
-            <div className="md-body" style={{ background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, padding: "28px 36px", maxHeight: 700, overflowY: "auto" }} dangerouslySetInnerHTML={{ __html: renderMd(rdContent) }}/>
+            <MdViewer md={rdContent} maxH={700} />
           </div>)}
         </div>)}
       </main>
@@ -646,7 +677,10 @@ export default function App() {
         ::-webkit-scrollbar{width:5px}
         ::-webkit-scrollbar-thumb{background:${AB};border-radius:3px}
         button:hover{filter:brightness(1.05)}
-        .md-body{line-height:1.8;font-size:15px;color:var(--color-text-primary)}
+        .toc-sidebar button:hover{background:${AL}!important}
+        .toc-sidebar::-webkit-scrollbar{width:3px}
+        .md-body{line-height:1.8;font-size:15px;color:var(--color-text-primary);scroll-behavior:smooth}
+        .md-body h1[id],.md-body h2[id],.md-body h3[id],.md-body h4[id]{scroll-margin-top:16px}
         .md-body .mh{color:var(--color-text-primary);margin-top:28px;margin-bottom:12px}
         .md-body .mh1{font-size:26px;font-weight:700}
         .md-body .mh2{font-size:21px;font-weight:700;border-bottom:1px solid rgba(127,119,221,0.15);padding-bottom:6px}
@@ -656,7 +690,9 @@ export default function App() {
         .md-body .mh6{font-size:14px;font-weight:600}
         .md-body .mhr{border:none;border-top:1px solid rgba(127,119,221,0.2);margin:24px 0}
         .md-body .mp{margin:5px 0;line-height:1.8}
+        .md-body .mp.mb0{margin-bottom:0;padding-bottom:0}
         .md-body .ma{color:#7F77DD;text-decoration:none}
+        .md-body .ma:hover{text-decoration:underline}
         .md-body .mi{max-width:100%;border-radius:8px;margin:8px 0}
         .md-body .mul,.md-body .mol{padding-left:24px;margin:8px 0}
         .md-body .mt{border-collapse:collapse;margin:12px 0;width:100%;font-size:13px}
@@ -672,4 +708,115 @@ export default function App() {
 
 function Btn({ i, l, o, outline, sm, disabled }) {
   return <button onClick={o} disabled={disabled} style={{ display: "flex", alignItems: "center", gap: 6, padding: sm ? "4px 12px" : "8px 16px", borderRadius: 8, fontSize: sm ? 12 : 13, fontWeight: 600, fontFamily: "inherit", cursor: disabled ? "not-allowed" : "pointer", border: outline ? `1px solid ${AB}` : "none", background: outline ? "var(--color-background-primary)" : A, color: outline ? "var(--color-text-primary)" : "#fff", opacity: disabled ? .5 : 1 }}>{i}{l}</button>;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MdViewer: Content panel + TOC sidebar + anchor scroll
+   ═══════════════════════════════════════════════════════════ */
+function MdViewer({ md, maxH = 700 }) {
+  const toc = useMemo(() => extractToc(md), [md]);
+  const html = useMemo(() => renderMd(md), [md]);
+  const contentRef = useRef(null);
+  const [activeId, setActiveId] = useState("");
+  const [tocOpen, setTocOpen] = useState(true);
+
+  // Scroll spy: track which heading is visible
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const headings = el.querySelectorAll("h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]");
+      let current = "";
+      for (const h of headings) {
+        if (h.offsetTop - el.scrollTop <= 60) current = h.id;
+      }
+      setActiveId(current);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [html]);
+
+  // Handle anchor clicks inside the content
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const onClick = (e) => {
+      const a = e.target.closest("a[href^='#']");
+      if (!a) return;
+      e.preventDefault();
+      const id = decodeURIComponent(a.getAttribute("href").slice(1));
+      const target = el.querySelector(`[id="${CSS.escape(id)}"]`) || el.querySelector(`[id*="${id}"]`);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    el.addEventListener("click", onClick);
+    return () => el.removeEventListener("click", onClick);
+  }, [html]);
+
+  const scrollTo = (id) => {
+    const el = contentRef.current;
+    if (!el) return;
+    const target = el.querySelector(`[id="${CSS.escape(id)}"]`) || el.querySelector(`[id*="${id}"]`);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const hasToc = toc.length > 2;
+
+  return (
+    <div style={{ display: "flex", gap: 0, background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, overflow: "hidden" }}>
+      {/* TOC Sidebar */}
+      {hasToc && (
+        <div className="toc-sidebar" style={{
+          width: tocOpen ? 260 : 0, minWidth: tocOpen ? 260 : 0,
+          borderRight: tocOpen ? `1px solid ${AB}` : "none",
+          transition: "all 0.2s",
+          overflow: "hidden", flexShrink: 0, position: "relative",
+        }}>
+          <div style={{ padding: "14px 0", height: maxH, overflowY: "auto", overflowX: "hidden" }}>
+            <div style={{ padding: "0 14px 10px", fontSize: 12, fontWeight: 700, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: 0.5 }}>目錄</div>
+            {toc.map((entry, i) => {
+              const isActive = activeId === entry.id;
+              const indent = Math.max(0, entry.level - 1) * 14;
+              return (
+                <button key={i} onClick={() => scrollTo(entry.id)} style={{
+                  display: "block", width: "100%", textAlign: "left",
+                  padding: `4px 14px 4px ${14 + indent}px`,
+                  border: "none", cursor: "pointer", fontFamily: "inherit",
+                  fontSize: entry.level <= 1 ? 13 : 12,
+                  fontWeight: entry.level <= 2 ? 600 : 400,
+                  lineHeight: 1.5,
+                  color: isActive ? A : "var(--color-text-secondary)",
+                  background: isActive ? AL : "transparent",
+                  borderLeft: isActive ? `2px solid ${A}` : "2px solid transparent",
+                  transition: "all 0.15s",
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                }}>
+                  {entry.text.replace(/\*+/g, "")}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* TOC toggle */}
+      {hasToc && (
+        <button onClick={() => setTocOpen(!tocOpen)} title={tocOpen ? "隱藏目錄" : "顯示目錄"} style={{
+          position: "absolute", zIndex: 10, left: tocOpen ? 252 : 4, top: 8,
+          width: 24, height: 24, borderRadius: 6, border: `1px solid ${AB}`,
+          background: "var(--color-background-primary)", cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 12, color: "var(--color-text-tertiary)", fontFamily: "inherit",
+          transition: "left 0.2s",
+        }}>
+          {tocOpen ? "◀" : "▶"}
+        </button>
+      )}
+
+      {/* Content */}
+      <div ref={contentRef} className="md-body" style={{
+        flex: 1, padding: "28px 36px", maxHeight: maxH, overflowY: "auto",
+        position: "relative",
+      }} dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
+  );
 }
