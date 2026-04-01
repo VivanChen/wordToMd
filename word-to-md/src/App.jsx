@@ -425,12 +425,13 @@ function renderMd(md) {
   h = h.replace(/((<tr>.*<\/tr>\n?)+)/g, m => {
     let t = m.replace(/<!--sep-->\n?/g, "");
     const fr = t.match(/<tr>(.*?)<\/tr>/);
+    // Detect 7-column field table BEFORE mth replace (fr[1] still has mtd)
+    const colCount = fr ? (fr[1].match(/<td/g) || []).length : 0;
+    const isFieldTable = colCount === 7 && /FieldName|Field Name/i.test(fr?.[1] || "");
+    // Now replace first row td with header style
     if (fr) t = t.replace(fr[0], fr[0].replace(/<td class="mtd">/g, '<td class="mth">'));
-    // Detect 7-column field table (No|FieldName|Type|Description|Default|Null|Remark)
-    const isFieldTable = fr && (fr[1].match(/mth/g) || []).length === 7 &&
-      /FieldName|Field Name/.test(fr[1]);
     const colgroup = isFieldTable
-      ? '<colgroup><col style="width:40px"><col style="width:120px"><col style="width:120px"><col><col style="width:55px"><col style="width:38px"><col style="width:55px"></colgroup>'
+      ? '<colgroup><col style="width:42px"><col style="width:125px"><col style="width:125px"><col><col style="width:56px"><col style="width:36px"><col style="width:56px"></colgroup>'
       : '';
     const cls = isFieldTable ? "mt mt-field" : "mt";
     return `<table class="${cls}">${colgroup}${t}</table>`;
