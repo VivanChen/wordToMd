@@ -416,19 +416,24 @@ function renderMd(md) {
   h = h.replace(/^\d+\.\s+(.+)$/gm, "<oli>$1</oli>");
   h = h.replace(/(<oli>.*<\/oli>\n?)+/g, m => `<ol class="mol">${m.replace(/oli>/g, "li>")}</ol>`);
 
-  // Tables
+  // Tables - Step 1: convert each | row | to <tr>
   h = h.replace(/^\|(.+)\|$/gm, (match) => {
     const cells = match.slice(1, -1).split("|").map(c => c.trim());
     if (cells.every(c => /^-+$/.test(c))) return "<!--sep-->";
     return `<tr>${cells.map(c => `<td class="mtd">${c}</td>`).join("")}</tr>`;
   });
+
+  // Step 2: remove separator lines so <tr> rows stay consecutive
+  h = h.replace(/<!--sep-->\n?/g, "");
+
+  // Step 3: group consecutive <tr> rows into <table>
   h = h.replace(/((<tr>.*<\/tr>\n?)+)/g, m => {
-    let t = m.replace(/<!--sep-->\n?/g, "");
+    let t = m;
     const fr = t.match(/<tr>(.*?)<\/tr>/);
-    // Detect 7-column field table BEFORE mth replace (fr[1] still has mtd)
+    // Detect 7-column field table BEFORE mth replace
     const colCount = fr ? (fr[1].match(/<td/g) || []).length : 0;
     const isFieldTable = colCount === 7 && /FieldName|Field Name/i.test(fr?.[1] || "");
-    // Now replace first row td with header style
+    // Replace first row td with header style
     if (fr) t = t.replace(fr[0], fr[0].replace(/<td class="mtd">/g, '<td class="mth">'));
     const colgroup = isFieldTable
       ? '<colgroup><col style="width:42px"><col style="width:125px"><col style="width:125px"><col><col style="width:56px"><col style="width:36px"><col style="width:56px"></colgroup>'
