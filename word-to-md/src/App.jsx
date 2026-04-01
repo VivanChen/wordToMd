@@ -219,10 +219,10 @@ function fixMetadataTables(md) {
 
       const m = parseMeta(tbl);
       if (m) {
-        out.push(`**Table Name:** ${m.tableName}`);
-        out.push(`**DB Name:** ${m.dbName}`);
-        out.push(`**System:** ${m.system}`);
-        out.push(`**Primary Key:** ${m.primaryKey || "-"}`);
+        out.push(`**Table Name:** ${m.tableName}  `);
+        out.push(`**DB Name:** ${m.dbName}  `);
+        out.push(`**System:** ${m.system}  `);
+        out.push(`**Primary Key:** ${m.primaryKey || "-"}  `);
         out.push(`**Index:** ${m.index || "-"}`);
         out.push("");
         i = j;
@@ -364,7 +364,7 @@ function addDocHeader(md) {
     "",
     ...(code ? [`**專案代號**：${code}  `] : []),
     ...(part ? [`**共同部分**：${part}  `] : []),
-    "**系統**：消企金授信管理應用系統",
+    `**系統**：消企金授信管理應用系統`,
     "",
   ];
 
@@ -431,16 +431,35 @@ function renderMd(md) {
 
   h = h.replace(/^&gt;\s?(.+)$/gm, '<blockquote class="mbq">$1</blockquote>');
 
-  // Paragraphs — handle consecutive <strong> lines as metadata block with <br>
-  h = h.split("\n").map((l, i, arr) => {
+  // Handle trailing two-spaces as <br> (standard MD line break)
+  h = h.replace(/  \n/g, "<br/>\n");
+
+  // Paragraphs — group consecutive lines with <br/> into single blocks
+  const pLines = h.split("\n");
+  const pOut = [];
+  let accum = [];
+
+  const isBlock = t => /^<(h[1-6]|ul|ol|li|pre|table|tr|td|hr|blockquote|div|p|img)/.test(t) || /^<!--/.test(t);
+  const flush = () => {
+    if (accum.length) {
+      pOut.push(`<p class="mp">${accum.join("\n")}</p>`);
+      accum = [];
+    }
+  };
+
+  for (const l of pLines) {
     const t = l.trim();
-    if (!t || /^<(h[1-6]|ul|ol|li|pre|table|tr|td|hr|blockquote|div|p|img)/.test(t) || /^<!--/.test(t)) return t;
-    // Check if this is a bold metadata line followed by another bold line
-    const isBoldLine = /^<strong>[^<]+<\/strong>/.test(t);
-    const nextIsBold = arr[i + 1] && /^<strong>[^<]+<\/strong>/.test(arr[i + 1]?.trim());
-    if (isBoldLine && nextIsBold) return `<p class="mp mb0">${t}</p>`;
-    return `<p class="mp">${t}</p>`;
-  }).join("\n");
+    if (!t) { flush(); pOut.push(""); continue; }
+    if (isBlock(t)) { flush(); pOut.push(t); continue; }
+    if (t.endsWith("<br/>")) {
+      accum.push(t);
+    } else {
+      if (accum.length) { accum.push(t); flush(); }
+      else pOut.push(`<p class="mp">${t}</p>`);
+    }
+  }
+  flush();
+  h = pOut.join("\n");
 
   return h;
 }
@@ -690,14 +709,13 @@ export default function App() {
         .md-body .mh6{font-size:14px;font-weight:600}
         .md-body .mhr{border:none;border-top:1px solid rgba(127,119,221,0.2);margin:24px 0}
         .md-body .mp{margin:5px 0;line-height:1.8}
-        .md-body .mp.mb0{margin-bottom:0;padding-bottom:0}
         .md-body .ma{color:#7F77DD;text-decoration:none}
         .md-body .ma:hover{text-decoration:underline}
         .md-body .mi{max-width:100%;border-radius:8px;margin:8px 0}
         .md-body .mul,.md-body .mol{padding-left:24px;margin:8px 0}
-        .md-body .mt{border-collapse:collapse;margin:12px 0;width:100%;font-size:13px}
-        .md-body .mtd{border:1px solid rgba(127,119,221,0.12);padding:8px 12px;white-space:nowrap}
-        .md-body .mth{border:1px solid rgba(127,119,221,0.12);padding:8px 12px;font-weight:600;background:rgba(127,119,221,0.04);white-space:nowrap}
+        .md-body .mt{border-collapse:collapse;margin:12px 0;width:100%;font-size:13px;table-layout:auto}
+        .md-body .mtd{border:1px solid rgba(127,119,221,0.12);padding:8px 12px;vertical-align:top}
+        .md-body .mth{border:1px solid rgba(127,119,221,0.12);padding:8px 12px;font-weight:600;background:rgba(127,119,221,0.04);white-space:nowrap;vertical-align:top}
         .md-body .mbq{border-left:3px solid #7F77DD;padding:8px 20px;margin:12px 0;color:var(--color-text-secondary);background:rgba(127,119,221,0.04);border-radius:0 6px 6px 0}
         .md-body .cb{background:rgba(127,119,221,0.06);padding:16px 20px;border-radius:10px;overflow-x:auto;font-size:0.85em;line-height:1.7;font-family:"JetBrains Mono",monospace;border:1px solid rgba(127,119,221,0.12)}
         .md-body .ci{background:rgba(127,119,221,0.1);padding:2px 6px;border-radius:4px;font-size:0.88em;font-family:"JetBrains Mono",monospace}
