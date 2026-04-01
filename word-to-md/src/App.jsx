@@ -436,7 +436,7 @@ function renderMd(md) {
     // Replace first row td with header style
     if (fr) t = t.replace(fr[0], fr[0].replace(/<td class="mtd">/g, '<td class="mth">'));
     const colgroup = isFieldTable
-      ? '<colgroup><col style="width:42px"><col style="width:125px"><col style="width:125px"><col><col style="width:56px"><col style="width:36px"><col style="width:56px"></colgroup>'
+      ? '<colgroup><col style="width:4%"><col style="width:12%"><col style="width:12%"><col><col style="width:5.5%"><col style="width:3.5%"><col style="width:5.5%"></colgroup>'
       : '';
     const cls = isFieldTable ? "mt mt-field" : "mt";
     return `<table class="${cls}">${colgroup}${t}</table>`;
@@ -604,7 +604,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main style={{ maxWidth: 1320, margin: "0 auto", padding: "24px 20px" }}>
+      <main style={{ maxWidth: "100%", margin: "0 auto", padding: "16px 24px" }}>
         {page === "convert" && (<div>
           {/* Upload */}
           <div onDrop={e => { e.preventDefault(); setDrag(false); handleFiles(e.dataTransfer.files); }} onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onClick={() => ref.current?.click()} style={{ border: `2px dashed ${drag ? A : AB}`, borderRadius: 14, padding: "34px 20px", textAlign: "center", cursor: "pointer", background: drag ? AL : "var(--color-background-primary)", transition: "all 0.2s", marginBottom: 14 }}>
@@ -659,7 +659,7 @@ export default function App() {
               </div>
 
               <div style={{ position: "relative" }}>
-                {view === "preview" && <MdViewer md={cur.md} maxH={650} />}
+                {view === "preview" && <MdViewer md={cur.md} maxH="calc(100vh - 220px)" />}
                 {view === "source" && <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, overflow: "hidden" }}><textarea value={cur.md} onChange={e => setMd(e.target.value)} style={{ width: "100%", minHeight: 550, padding: "22px 28px", border: "none", resize: "vertical", fontFamily: '"JetBrains Mono", monospace', fontSize: 13, lineHeight: 1.7, background: "transparent", color: "var(--color-text-primary)", outline: "none" }}/></div>}
                 {view === "html" && <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, overflow: "hidden" }}><pre style={{ padding: "22px 28px", fontSize: 12, lineHeight: 1.6, overflowX: "auto", maxHeight: 550, fontFamily: '"JetBrains Mono", monospace', color: "var(--color-text-secondary)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{cur.html}</pre></div>}
               </div>
@@ -695,7 +695,7 @@ export default function App() {
                 <Btn i={I.x} l="關閉" o={() => { setRdFile(null); setRdContent(""); }} outline sm />
               </div>
             </div>
-            <MdViewer md={rdContent} maxH={700} />
+            <MdViewer md={rdContent} maxH="calc(100vh - 170px)" />
           </div>)}
         </div>)}
       </main>
@@ -728,9 +728,10 @@ export default function App() {
         .md-body .mul,.md-body .mol{padding-left:24px;margin:8px 0}
         .md-body .mt{border-collapse:collapse;margin:16px 0;width:100%;font-size:13.5px}
         .md-body .mt-field{table-layout:fixed}
+        .md-body .mt-field .mtd,.md-body .mt-field .mth{padding:8px 8px}
         .md-body .mt tr:nth-child(even){background:rgba(127,119,221,0.025)}
-        .md-body .mtd{border:1px solid rgba(127,119,221,0.12);padding:10px 14px;vertical-align:top;word-wrap:break-word}
-        .md-body .mth{border:1px solid rgba(127,119,221,0.12);padding:10px 14px;font-weight:600;background:rgba(127,119,221,0.04);vertical-align:top;white-space:nowrap}
+        .md-body .mtd{border:1px solid rgba(127,119,221,0.12);padding:10px 12px;vertical-align:top;word-wrap:break-word;overflow-wrap:break-word}
+        .md-body .mth{border:1px solid rgba(127,119,221,0.12);padding:10px 12px;font-weight:600;background:rgba(127,119,221,0.04);vertical-align:top;white-space:nowrap}
         .md-body .mbq{border-left:3px solid #7F77DD;padding:8px 20px;margin:12px 0;color:var(--color-text-secondary);background:rgba(127,119,221,0.04);border-radius:0 6px 6px 0}
         .md-body .cb{background:rgba(127,119,221,0.06);padding:16px 20px;border-radius:10px;overflow-x:auto;font-size:0.85em;line-height:1.7;font-family:"JetBrains Mono",monospace;border:1px solid rgba(127,119,221,0.12)}
         .md-body .ci{background:rgba(127,119,221,0.1);padding:2px 6px;border-radius:4px;font-size:0.88em;font-family:"JetBrains Mono",monospace}
@@ -746,7 +747,7 @@ function Btn({ i, l, o, outline, sm, disabled }) {
 /* ═══════════════════════════════════════════════════════════
    MdViewer: Content panel + TOC sidebar + anchor scroll
    ═══════════════════════════════════════════════════════════ */
-function MdViewer({ md, maxH = 700 }) {
+function MdViewer({ md, maxH = "calc(100vh - 200px)" }) {
   const toc = useMemo(() => extractToc(md), [md]);
   const html = useMemo(() => renderMd(md), [md]);
   const contentRef = useRef(null);
@@ -847,7 +848,7 @@ function MdViewer({ md, maxH = 700 }) {
 
       {/* Content */}
       <div ref={contentRef} className="md-body" style={{
-        flex: 1, padding: "28px 36px", maxHeight: maxH, overflowY: "auto",
+        flex: 1, padding: "20px 24px", maxHeight: maxH, overflowY: "auto",
         position: "relative",
       }} dangerouslySetInnerHTML={{ __html: html }} />
     </div>
