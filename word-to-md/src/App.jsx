@@ -1,5 +1,41 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import * as mammoth from "mammoth";
+import JSZip from "jszip";
+
+/* ═══════════════════════════════════════════════════════════
+   Phase 0: docx pre-processing (before mammoth)
+   mammoth only reads <w:strike> (single strikethrough). Word's
+   double strikethrough <w:dstrike> is silently dropped, so that
+   text comes out as plain text. We rewrite dstrike → strike in
+   every relevant part so all strikethrough survives as ~~...~~.
+   Attributes are preserved, so an explicit w:val="false" (i.e.
+   strikethrough turned OFF) is still respected by mammoth.
+   ═══════════════════════════════════════════════════════════ */
+async function preprocessDocx(arrayBuffer) {
+  let zip;
+  try {
+    zip = await JSZip.loadAsync(arrayBuffer);
+  } catch {
+    return arrayBuffer; // not a zip we can read — let mammoth try as-is
+  }
+  // document body + headers/footers + foot/endnotes can all hold runs
+  const targets = Object.keys(zip.files).filter(p =>
+    /^word\/(document\d*|header\d+|footer\d+|footnotes|endnotes)\.xml$/.test(p)
+  );
+  let changed = false;
+  for (const p of targets) {
+    const xml = await zip.file(p).async("string");
+    if (!xml.includes("w:dstrike")) continue;
+    const fixed = xml
+      .replace(/<w:dstrike(\b[^>]*)\/>/g, "<w:strike$1/>")
+      .replace(/<w:dstrike(\b[^>]*)>/g, "<w:strike$1>")
+      .replace(/<\/w:dstrike>/g, "</w:strike>");
+    zip.file(p, fixed);
+    changed = true;
+  }
+  if (!changed) return arrayBuffer;
+  return zip.generateAsync({ type: "arraybuffer" });
+}
 
 /* ═══════════════════════════════════════════════════════════
    Phase 1: HTML → Raw Markdown
@@ -124,6 +160,11 @@ function postProcess(md, opts = {}) {
   // 3. Remove empty headings (## with no text)
   r = r.replace(/^#{1,6}\s*$/gm, "");
 
+  // 3b. Strikethrough off → drop the ~~ markers but keep the text
+  if (opts.preserveStrikethrough === false) {
+    r = r.replace(/~~([^~]+)~~/g, "$1");
+  }
+
   // 4. Remove Edition History
   if (opts.removeEditionHistory !== false) {
     r = removeEditionHistory(r);
@@ -133,16 +174,24 @@ function postProcess(md, opts = {}) {
   r = fixTOC(r);
 
   // 6. Convert metadata tables → key-value
-  r = fixMetadataTables(r);
+  if (opts.normalizeMetaTables !== false) {
+    r = fixMetadataTables(r);
+  }
 
-  // 7. Fix field data tables
-  r = fixDataTables(r);
+  // 7. Fix field data tables (auto-detects columns)
+  if (opts.normalizeFieldTables !== false) {
+    r = fixDataTables(r);
+  }
 
   // 8. Add section numbers
-  r = addSectionNumbers(r);
+  if (opts.sectionNumbers !== false) {
+    r = addSectionNumbers(r);
+  }
 
   // 9. Build document header
-  r = addDocHeader(r);
+  if (opts.buildDocHeader !== false) {
+    r = addDocHeader(r);
+  }
 
   // 10. Remove stray "Index" lines (leftover from metadata tables)
   r = r.replace(/^\n*Index\n*$/gm, "");
@@ -260,13 +309,27 @@ function parseMeta(tableLines) {
   return m.tableName ? m : null;
 }
 
+/* A markdown table row is a separator if every cell is only dashes/colons */
+function isSepRow(line) {
+  if (!line.startsWith("|")) return false;
+  const cells = line.split("|").slice(1, -1);
+  return cells.length > 0 && cells.every(c => /-/.test(c) && /^[\s:-]+$/.test(c));
+}
+
+/* Detect a "field spec" table by its header. Triggers on the EnTie
+   DB-spec FieldName column as well as common Chinese variants, so the
+   same normalizer adapts to documents with different column layouts. */
+function isFieldTableHeader(line) {
+  return /^\|.*(?:Field\s*Name|FieldName|欄位名稱|欄位代號|欄位英文|欄位中文)/i.test(line);
+}
+
 function fixDataTables(md) {
   const lines = md.split("\n");
   const out = [];
   let i = 0;
 
   while (i < lines.length) {
-    if (/^\|.*(?:FieldName|Field\s*Name)/i.test(lines[i])) {
+    if (isFieldTableHeader(lines[i])) {
       const tbl = [lines[i]];
       let j = i + 1;
       while (j < lines.length && lines[j].startsWith("|")) { tbl.push(lines[j]); j++; }
@@ -280,53 +343,47 @@ function fixDataTables(md) {
   return out.join("\n");
 }
 
+/* Normalize a field-spec table WITHOUT assuming a fixed column set.
+   The header row is taken as the source of truth: every column it
+   declares is preserved, in order. We only:
+     - renumber the "No." column (if one exists)
+     - drop rows whose name column is empty (deleted / spacer rows)
+     - collapse internal whitespace and re-pad for clean alignment    */
 function fixFieldTable(tableLines) {
-  const headerCells = tableLines[0].split("|").slice(1, -1).map(c => c.trim());
-  const cm = {};
-  headerCells.forEach((h, idx) => {
-    const k = h.toLowerCase().replace(/\s+/g, "").replace(/\*/g, "");
-    if (k === "no") cm.no = idx;
-    else if (k.includes("fieldname") || k.includes("field name")) cm.field = idx;
-    else if (k === "type") cm.type = idx;
-    else if (k === "description") cm.desc = idx;
-    else if (k === "default") cm.def = idx;
-    else if (k === "null") cm.nullable = idx;
-    else if (k === "remark") cm.remark = idx;
-  });
+  const norm = s => s.toLowerCase().replace(/\s+/g, "").replace(/[*_~`]/g, "");
+  const headers = tableLines[0].split("|").slice(1, -1).map(c => c.trim());
+  const cols = headers.length;
+  if (!cols) return tableLines;
 
-  const data = tableLines.slice(2).filter(l => l.startsWith("|") && !/^\|\s*-+/.test(l));
+  const noIdx = headers.findIndex(h => /^no\.?$|^#$|^項次$|序號|編號|序位/.test(norm(h)));
+  let nameIdx = headers.findIndex(h => /fieldname|欄位名稱|欄位代號|欄位英文|欄位中文/.test(norm(h)));
+  if (nameIdx === -1) nameIdx = headers.findIndex(h => /field|欄位/.test(norm(h)));
+  if (nameIdx === -1) nameIdx = noIdx === 0 ? 1 : 0;
+
+  const dataRows = tableLines.slice(1).filter(l => l.startsWith("|") && !isSepRow(l));
   const rows = [];
   let n = 1;
 
-  for (const row of data) {
-    const cells = row.split("|").slice(1, -1).map(c => c.trim());
-    const field = (cells[cm.field ?? 1] || "").trim();
-    if (!field) continue;
-
-    rows.push({
-      no: String(n++),
-      field,
-      type: (cells[cm.type ?? 2] || "").trim(),
-      desc: (cells[cm.desc ?? 3] || "").trim(),
-      def: (cells[cm.def ?? 4] || "").trim() || "-",
-      nullable: (cells[cm.nullable ?? 5] || "").trim(),
-      remark: (cells[cm.remark ?? 6] || "").replace(/\s+/g, " ").trim() || "-",
-    });
+  for (const row of dataRows) {
+    const cells = row.split("|").slice(1, -1).map(c => c.replace(/\s+/g, " ").trim());
+    while (cells.length < cols) cells.push("");
+    if (cells.length > cols) cells.length = cols;
+    // skip blank rows and rows with no field name
+    if (!cells.some(c => c.replace(/[-\s]/g, ""))) continue;
+    if (nameIdx >= 0 && !(cells[nameIdx] || "").trim()) continue;
+    if (noIdx >= 0) cells[noIdx] = String(n++);
+    rows.push(cells);
   }
 
   if (!rows.length) return tableLines;
 
-  const hdrs = ["No", "FieldName", "Type", "Description", "Default", "Null", "Remark"];
-  const keys = ["no", "field", "type", "desc", "def", "nullable", "remark"];
-  const w = hdrs.map((h, i) => Math.max(h.length, ...rows.map(r => (r[keys[i]] || "").length)));
-
-  const lines = [];
-  lines.push("| " + hdrs.map((h, i) => h.padEnd(w[i])).join(" | ") + " |");
-  lines.push("| " + w.map(v => "-".repeat(v)).join(" | ") + " |");
-  for (const row of rows) {
-    lines.push("| " + keys.map((k, i) => (row[k] || "").padEnd(w[i])).join(" | ") + " |");
-  }
-  return lines;
+  const all = [headers, ...rows];
+  const w = Array.from({ length: cols }, (_, i) =>
+    Math.max(3, ...all.map(r => (r[i] || "").length))
+  );
+  const fmt = r => "| " + Array.from({ length: cols }, (_, i) => (r[i] || "").padEnd(w[i])).join(" | ") + " |";
+  const sep = "| " + w.map(v => "-".repeat(v)).join(" | ") + " |";
+  return [fmt(headers), sep, ...rows.map(fmt)];
 }
 
 function addSectionNumbers(md) {
@@ -376,6 +433,26 @@ function addDocHeader(md) {
    ═══════════════════════════════════════════════════════════ */
 function convertDocx(html, opts) {
   return postProcess(htmlToMarkdown(html), opts);
+}
+
+/* Read one File → result object, applying the docx pre-process + pipeline */
+async function convertFile(file, opts) {
+  try {
+    let buf = await file.arrayBuffer();
+    if (opts.preserveStrikethrough !== false) {
+      buf = await preprocessDocx(buf);
+    }
+    const r = await mammoth.convertToHtml({ arrayBuffer: buf });
+    return {
+      file,
+      md: convertDocx(r.value, opts),
+      html: r.value,
+      ok: true,
+      warn: r.messages?.filter(m => m.type === "warning").length || 0,
+    };
+  } catch (e) {
+    return { file, md: "", html: "", ok: false, err: e.message };
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -430,12 +507,13 @@ function renderMd(md) {
   h = h.replace(/((<tr>.*<\/tr>\n?)+)/g, m => {
     let t = m;
     const fr = t.match(/<tr>(.*?)<\/tr>/);
-    // Detect 7-column field table BEFORE mth replace
+    // Detect field table by header text BEFORE mth replace (any column count)
     const colCount = fr ? (fr[1].match(/<td/g) || []).length : 0;
-    const isFieldTable = colCount === 7 && /FieldName|Field Name/i.test(fr?.[1] || "");
+    const isFieldTable = /FieldName|Field Name|欄位名稱|欄位代號|欄位英文|欄位中文/i.test(fr?.[1] || "");
     // Replace first row td with header style
     if (fr) t = t.replace(fr[0], fr[0].replace(/<td class="mtd">/g, '<td class="mth">'));
-    const colgroup = isFieldTable
+    // Only the canonical 7-column EnTie layout gets the tuned widths
+    const colgroup = (isFieldTable && colCount === 7)
       ? '<colgroup><col style="width:4%"><col style="width:12%"><col style="width:12%"><col><col style="width:5.5%"><col style="width:3.5%"><col style="width:5.5%"></colgroup>'
       : '';
     const cls = isFieldTable ? "mt mt-field" : "mt";
@@ -533,7 +611,14 @@ export default function App() {
   const [prog, setProg] = useState({ d: 0, t: 0, n: "" });
   const [toast, setToast] = useState(null);
   const [drag, setDrag] = useState(false);
-  const [opts, setOpts] = useState({ removeEditionHistory: true });
+  const [opts, setOpts] = useState({
+    preserveStrikethrough: true,
+    normalizeFieldTables: true,
+    normalizeMetaTables: true,
+    sectionNumbers: true,
+    buildDocHeader: true,
+    removeEditionHistory: true,
+  });
   const [rdFile, setRdFile] = useState(null);
   const [rdContent, setRdContent] = useState("");
   const ref = useRef(null);
@@ -550,14 +635,7 @@ export default function App() {
     const res = [];
     for (let i = 0; i < valid.length; i++) {
       setProg({ d: i, t: valid.length, n: valid[i].name });
-      try {
-        const buf = await valid[i].arrayBuffer();
-        const r = await mammoth.convertToHtml({ arrayBuffer: buf });
-        const md = convertDocx(r.value, opts);
-        res.push({ file: valid[i], md, html: r.value, ok: true, warn: r.messages?.filter(m => m.type === "warning").length || 0 });
-      } catch (e) {
-        res.push({ file: valid[i], md: "", html: "", ok: false, err: e.message });
-      }
+      res.push(await convertFile(valid[i], opts));
     }
     setResults(res);
     setProg({ d: valid.length, t: valid.length, n: "" });
@@ -568,6 +646,22 @@ export default function App() {
     else if (fail) notify(`轉換失敗: ${res[0].err}`, "error");
     else notify(`${ok} 個檔案轉換完成！`);
   }, [opts]);
+
+  // Re-run conversion on the already-loaded files (e.g. after toggling options)
+  const reconvert = useCallback(async () => {
+    const files = results.map(r => r.file).filter(Boolean);
+    if (!files.length) return;
+    setBusy(true);
+    const res = [];
+    for (let i = 0; i < files.length; i++) {
+      setProg({ d: i, t: files.length, n: files[i].name });
+      res.push(await convertFile(files[i], opts));
+    }
+    setResults(res);
+    setProg({ d: files.length, t: files.length, n: "" });
+    setBusy(false);
+    notify("已套用新的轉換選項");
+  }, [results, opts, notify]);
 
   const cur = results[idx];
   const setMd = v => setResults(p => p.map((r, i) => i === idx ? { ...r, md: v } : r));
@@ -614,12 +708,24 @@ export default function App() {
             <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>mammoth.js 轉換 + 後處理引擎自動修正 Word 格式瑕疵</div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14, fontSize: 13, color: "var(--color-text-secondary)" }}>
-            {I.gear}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" checked={opts.removeEditionHistory} onChange={e => setOpts({ ...opts, removeEditionHistory: e.target.checked })} style={{ accentColor: A }} />
-              移除修改歷史表 (Edition History)
-            </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, fontSize: 13, color: "var(--color-text-secondary)", flexWrap: "wrap" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, color: A, fontWeight: 600 }}>{I.gear}轉換選項</span>
+            {[
+              { k: "preserveStrikethrough", l: "保留刪除線（含雙刪除線）" },
+              { k: "normalizeFieldTables", l: "標準化欄位表（自動偵測欄位）" },
+              { k: "normalizeMetaTables", l: "合併中繼資料表" },
+              { k: "sectionNumbers", l: "自動章節編號" },
+              { k: "buildDocHeader", l: "產生文件標題區" },
+              { k: "removeEditionHistory", l: "移除修改歷史表" },
+            ].map(o => (
+              <label key={o.k} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={opts[o.k] !== false} onChange={e => setOpts({ ...opts, [o.k]: e.target.checked })} style={{ accentColor: A }} />
+                {o.l}
+              </label>
+            ))}
+            {results.length > 0 && !busy && (
+              <Btn i={I.gear} l="重新套用選項" o={reconvert} outline sm />
+            )}
           </div>
 
           {busy && <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: `1px solid ${AB}`, padding: "28px 24px", marginBottom: 16, textAlign: "center" }}>
